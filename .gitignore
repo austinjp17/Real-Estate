@@ -1,0 +1,7 @@
+# Ignore compiled files and target directory for Rust
+/target/
+
+# Ignore Python files
+*.pyc
+__pycache__/
+py_venv
