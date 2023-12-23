@@ -2,6 +2,7 @@ use anyhow::Result;
 use reqwest::{Client, header::{HeaderMap, HeaderValue, COOKIE}};
 use tracing::info;
 use tracing_subscriber;
+use scraper::{Html, Selector, Element};
 
 #[tracing::instrument]
 fn redfin_url_builder() -> String {
@@ -16,7 +17,7 @@ fn redfin_url_builder() -> String {
     base_url
 }
 
-async fn request(target_url: &str) -> Result<reqwest::Response> {
+async fn request(target_url: &str) -> Result<String> {
 
     let mut headers = HeaderMap::new();
     
@@ -37,11 +38,32 @@ async fn request(target_url: &str) -> Result<reqwest::Response> {
     }
 
     info!("Getting {}...", target_url);
-    let body = reqwest::get(url).await?;
-    info!("Response Code: {}", body.status());
+    let response = reqwest::get(url).await?;
+    info!("Response Code: {}", response.status());
+    let response_str = response.text().await?;
 
-    Ok(body)
+
+    Ok(response_str)
 }
+
+/// contains text: "Viewing page x of n" in page control div
+/// extracts, parses, and returns n
+fn get_page_count(parsed_html: &Html) -> u8 {
+    // Find page controls container
+    
+    let page_count_span = r#"span[class="pageText"]"#;
+    let page_count_selector = Selector::parse(page_count_span).unwrap();
+
+    let page_count_container = parsed_html.select(&page_count_selector).next().unwrap();
+    let page_count_str: String = page_count_container.inner_html();
+    let page_count: u8 = page_count_str.chars().last().unwrap()
+        .to_digit(10).unwrap().try_into().unwrap();
+    
+    info!("Found {} pages", page_count);
+    page_count
+}
+
+
 
 #[tokio::main]
 async fn main() {
@@ -49,6 +71,30 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let url = redfin_url_builder();
-    let response = request(&url).await;
+    let request_result = request(&url).await;
+    if request_result.is_err() { 
+        panic!("Request Error: {}", request_result.expect_err("Conditioned for") ) 
+    }
+
+    let response = request_result.expect("conditioned");
+    let parsed = Html::parse_document(&response);
+
+    let page_count = get_page_count(&parsed);
+
+    let home_card_div = r#"div[class="HomeCardContainer defaultSplitMapListView"]"#;
+    let home_selector = Selector::parse(home_card_div).unwrap();
+    
+    
+    
+    let mut i = 0;
+    // for element in page_controls.select(&Selector::parse("div").unwrap()) {
+    //     println!("{:?}", i);
+    //     println!("Element: {:?}", element.value());
+    //     println!("Element Child: {:?}", element.children());
+    //     i += 1;
+    // }
+
+    // println!("{:?}", elems);
+
     
 }
