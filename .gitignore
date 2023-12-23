@@ -3,5 +3,6 @@
 
 # Ignore Python files
 *.pyc
+*.py
 __pycache__/
 py_venv
