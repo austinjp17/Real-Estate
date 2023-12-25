@@ -20,7 +20,7 @@ pub(crate) fn url_builder() -> String {
 
 /// contains text: "Viewing page x of n" in page control div
 /// extracts, parses, and returns n
-#[tracing::instrument]
+
 pub(crate) fn get_page_count(parsed_html: &Html) -> u8 {
     
     // Define Target Span & build html selector
@@ -63,7 +63,7 @@ pub(crate) fn get_page_homes(parsed_html: &Html) -> Vec<HomeListing> {
         i += 1;
     }
 
-    info!("Number of houses found: {}", i);
+    info!("Number of houses on page found: {}", i);
 
     listings
 }

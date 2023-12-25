@@ -1,10 +1,10 @@
 use serde_json::Value;
 use scraper::{Html, Selector, ElementRef};
-use polars::prelude::DataFrame;
+use polars::prelude::*;
 use tracing::{info, trace, warn};
 use std::collections::VecDeque;
 
-pub struct HomeAddress {
+pub(crate) struct HomeAddress {
     street: String,
     apt: Option<u16>,
     city: String,
@@ -22,7 +22,8 @@ pub(crate) struct HomeListing {
 }
 
 impl HomeListing {
-    pub fn from_redfin(home_elem: &ElementRef) -> Self {
+    /// Takes parsed HTML from a redfin listing and extracts key elements
+    pub(crate) fn from_redfin(home_elem: &ElementRef) -> Self {
         // extract price
         let price_id = r#"span[class="homecardV2Price"]"#;
         let price_sel = Selector::parse(price_id).unwrap();
@@ -97,7 +98,7 @@ impl HomeListing {
         let address_sel = Selector::parse(address_id).unwrap();
         let address_str = home_elem.select(&address_sel).next().unwrap().inner_html();
         
-
+        // Parse address
         // Initally 3 compenents: [street, city, (state zip)]
         let mut addr_components = address_str.split(",").map(|a| a.trim().to_string()).collect::<VecDeque<String>>();
         // split state and zip
@@ -119,6 +120,7 @@ impl HomeListing {
         let state = addr_components.pop_front().unwrap();
         let zip = addr_components.pop_front().unwrap().chars().collect::<Vec<char>>().into_iter().map(|c| c.to_digit(10).unwrap() as u8).collect::<Vec<u8>>();
 
+        // Address correctness assertions
         assert_eq!(state.chars().collect::<Vec<char>>().len(), 2); // State should always be two letters
         assert_eq!(zip.len(), 5); // Zip should always be 5 digits
         assert!(street.chars().collect::<Vec<char>>().len() > city.chars().collect::<Vec<char>>().len());
@@ -135,7 +137,7 @@ impl HomeListing {
         assert_ne!(beds, u8::MAX);
         assert_ne!(baths, u8::MAX);
         assert_ne!(sqft, u32::MAX);
-        info!("Redfin Listing extracted");
+        // info!("Redfin Listing extracted");
 
         HomeListing {
             price,
@@ -149,11 +151,56 @@ impl HomeListing {
         
     }
 
-
 }
 
 
-struct ListingsContainer {
-    queue: Vec<HomeListing>,
+#[derive(Default)]
+pub(crate) struct ListingsContainer {
+    queue: Vec<HomeListing>, // replace w/ Multiproducer single consumer??
     data: DataFrame,
-} 
+}
+
+impl ListingsContainer {
+    pub(crate) fn new(queue: Vec<HomeListing>, data: DataFrame) -> Self {
+        ListingsContainer { queue, data }
+    }
+
+    pub(crate) fn enqueue(&mut self, new_listings: &mut Vec<HomeListing>) {
+        self.queue.append(new_listings)
+    }
+    /// Adds all listing objects in queue to data as new rows
+    /// empties queue
+    /// TODO: Handle Address
+    pub(crate) fn handle_queue(&mut self) {
+        let mut prices = vec![];
+        let mut beds = vec![];
+        let mut baths = vec![];
+        let mut sqft = vec![];
+        let mut lot_size = vec![];
+        // let mut address = vec![];
+        
+        // Order doesn't matter, can be parrelized
+        self.queue.iter().for_each(|listing| {
+            prices.push(listing.price);
+            beds.push(listing.beds);
+            baths.push(listing.baths);
+            sqft.push(listing.sqft);
+            lot_size.push(listing.sqft);
+        });
+
+        // All vecs same len
+        assert!(prices.len() == beds.len() && prices.len() == baths.len() && prices.len() == sqft.len() && prices.len() == lot_size.len());
+        
+        let prices = Series::new("price", prices);
+        let beds = Series::new("beds", beds);
+        let baths = Series::new("baths", baths);
+        let sqft = Series::new("sqft", sqft);
+        let lot_size = Series::new("lot_size", lot_size);
+        let new_data = DataFrame::new(vec![prices, beds, baths, sqft, lot_size]).unwrap();
+
+        if self.data.vstack(&new_data).is_err() {
+            warn!("Failed to append new data")
+        }
+
+    }
+}
