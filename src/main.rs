@@ -1,6 +1,7 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, fs::File};
 
 use anyhow::Result;
+use polars::io::csv::CsvWriter;
 use tracing::{info, trace, warn};
 use tracing_subscriber;
 use scraper::Html;
@@ -61,9 +62,13 @@ async fn main() {
     let page_count = redfin::get_page_count(&response);
 
     let mut new_listings = redfin::get_page_homes(&response);
+    
     listings_container.enqueue(&mut new_listings);
-
     listings_container.handle_queue();
+    println!("{:?}", listings_container.data.shape());
+    
+    listings_container.to_csv();
+
 
     
 

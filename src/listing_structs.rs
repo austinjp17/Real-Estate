@@ -2,7 +2,7 @@ use serde_json::Value;
 use scraper::{Html, Selector, ElementRef};
 use polars::prelude::*;
 use tracing::{info, trace, warn};
-use std::collections::VecDeque;
+use std::{collections::VecDeque, fs::File};
 
 pub(crate) struct HomeAddress {
     street: String,
@@ -154,10 +154,21 @@ impl HomeListing {
 }
 
 
-#[derive(Default)]
 pub(crate) struct ListingsContainer {
-    queue: Vec<HomeListing>, // replace w/ Multiproducer single consumer??
-    data: DataFrame,
+    pub(crate) queue: Vec<HomeListing>, // replace w/ Multiproducer single consumer??
+    pub(crate) data: DataFrame,
+}
+
+impl Default for ListingsContainer {
+    fn default() -> Self {
+        let price_col = Series::new_empty("price", &DataType::UInt32);
+        let beds_col = Series::new_empty("beds", &DataType::UInt8);
+        let baths_col = Series::new_empty("baths", &DataType::UInt8);
+        let sqft_col = Series::new_empty("sqft", &DataType::UInt32);
+        let lot_size_col = Series::new_empty("lot_size", &DataType::UInt32);
+        let cols = vec![price_col, beds_col, baths_col, sqft_col, lot_size_col];
+        Self { queue: vec![], data: DataFrame::new(cols).expect("failed to create default df") }
+    }
 }
 
 impl ListingsContainer {
@@ -166,7 +177,14 @@ impl ListingsContainer {
     }
 
     pub(crate) fn enqueue(&mut self, new_listings: &mut Vec<HomeListing>) {
-        self.queue.append(new_listings)
+        let expected_queue_len = self.queue.len() + new_listings.len();
+
+        info!("Adding {} listings to queue", new_listings.len());
+        self.queue.append(new_listings);
+
+        // Assert items added
+        assert_eq!(self.queue.len(), expected_queue_len);
+        
     }
     /// Adds all listing objects in queue to data as new rows
     /// empties queue
@@ -198,9 +216,21 @@ impl ListingsContainer {
         let lot_size = Series::new("lot_size", lot_size);
         let new_data = DataFrame::new(vec![prices, beds, baths, sqft, lot_size]).unwrap();
 
-        if self.data.vstack(&new_data).is_err() {
-            warn!("Failed to append new data")
-        }
+        // Add rows to dataframe
+        self.data = self.data.vstack(&new_data).expect("failed to concat new listings");
 
+        // Clear Queue
+        self.queue.clear();
+
+    }
+
+    pub(crate) fn to_csv(&mut self) {
+        let mut file = File::create("out.csv").expect("asdf");
+
+        if CsvWriter::new(&mut file)
+            .finish(&mut self.data).is_err() {
+                warn!("Error writing to csv");
+            }
+        
     }
 }

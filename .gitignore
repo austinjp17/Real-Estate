@@ -1,5 +1,7 @@
 # Ignore compiled files and target directory for Rust
 /target/
+*.csv
+*.txt
 
 # Ignore Python files
 *.pyc
