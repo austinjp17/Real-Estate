@@ -17,7 +17,7 @@ pub(crate) struct HomeListing {
     beds: u8,
     baths: u8,
     sqft: u32,
-    lot_size: Option<u32>,
+    lot_size: i32,
     address: HomeAddress
 }
 
@@ -39,7 +39,7 @@ impl HomeListing {
         let mut beds: u8 = u8::MAX;
         let mut baths = u8::MAX;
         let mut sqft = u32::MAX;
-        let mut lot_size: Option<u32> = None;
+        let mut lot_size = -1_i32;
         for e in stat_elems {
             let stat_str = e.inner_html();
             // Number of bedrooms
@@ -60,16 +60,16 @@ impl HomeListing {
                 
                 // if len split is 4 then lot measured in sqft (Desired)
                 if split_items.len() == 4 {
-                    lot_size = Some(split_items.first().unwrap().replace(",", "").parse::<u32>().expect("failed to parse"));
+                    lot_size = split_items.first().unwrap().replace(",", "").parse::<i32>().expect("failed to parse");
                 }
 
                 // if 3, then measured in acreage
                 else if split_items.len() == 3 {
 
-                    fn acre_to_sqft(acres: f32) -> u32 { (acres * 43460_f32) as u32 }
+                    fn acre_to_sqft(acres: f32) -> i32 { (acres * 43460_f32) as i32 }
 
                     let lot_acres = split_items.first().unwrap().parse::<f32>().expect("failed to parse");
-                    lot_size = Some(acre_to_sqft(lot_acres));
+                    lot_size = acre_to_sqft(lot_acres);
 
                 }
 
@@ -137,6 +137,7 @@ impl HomeListing {
         assert_ne!(beds, u8::MAX);
         assert_ne!(baths, u8::MAX);
         assert_ne!(sqft, u32::MAX);
+        assert_ne!(sqft as i32, lot_size);
         trace!("Redfin Listing extracted");
 
         HomeListing {
@@ -165,7 +166,7 @@ impl Default for ListingsContainer {
         let beds_col = Series::new_empty("beds", &DataType::UInt8);
         let baths_col = Series::new_empty("baths", &DataType::UInt8);
         let sqft_col = Series::new_empty("sqft", &DataType::UInt32);
-        let lot_size_col = Series::new_empty("lot_size", &DataType::UInt32);
+        let lot_size_col = Series::new_empty("lot_size", &DataType::Int32);
         let street_col = Series::new_empty("street", &DataType::Utf8);
         let apt_col = Series::new_empty("apt", &DataType::Int32);
         let city_col = Series::new_empty("city", &DataType::Utf8);
@@ -214,7 +215,7 @@ impl ListingsContainer {
             beds.push(listing.beds);
             baths.push(listing.baths);
             sqft.push(listing.sqft);
-            lot_size.push(listing.sqft);
+            lot_size.push(listing.lot_size);
             street.push(listing.address.street.clone());
             apt.push(listing.address.apt);
             city.push(listing.address.city.clone());
