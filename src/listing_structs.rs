@@ -3,6 +3,7 @@ use scraper::{Html, Selector, ElementRef};
 use polars::prelude::*;
 use tracing::{info, trace, warn};
 use std::{collections::VecDeque, fs::File};
+use anyhow::{Result, anyhow};
 
 pub(crate) struct HomeAddress {
     street: String,
@@ -14,8 +15,8 @@ pub(crate) struct HomeAddress {
 
 pub(crate) struct HomeListing {
     price: u32,
-    beds: u8,
-    baths: u8,
+    beds: i32,
+    baths: i32,
     sqft: u32,
     lot_size: i32,
     address: HomeAddress
@@ -23,12 +24,17 @@ pub(crate) struct HomeListing {
 
 impl HomeListing {
     /// Takes parsed HTML from a redfin listing and extracts key elements
-    pub(crate) fn from_redfin(home_elem: &ElementRef) -> Self {
+    pub(crate) fn from_redfin(home_elem: &ElementRef) -> Result<Self> {
         // extract price
+        let mut price = u32::MAX;
         let price_id = r#"span[class="homecardV2Price"]"#;
         let price_sel = Selector::parse(price_id).unwrap();
         let price_str = home_elem.select(&price_sel).next().unwrap().inner_html();
-        let price: u32 = (&price_str[1..]).replace(',', "").parse().unwrap();
+        if let Ok(p) = (&price_str[1..]).replace(',', "").parse::<u32>() {
+            price = p
+        } else {
+            return Err(anyhow!("Price parsing error"));
+        }
 
         // Get Stats (beds, baths, sqftage, lot size)
         let stats_id = r#"div[class="stats"]"#;
@@ -36,19 +42,27 @@ impl HomeListing {
         let stat_elems = home_elem.select(&stats_sel);
 
         // Parse stats
-        let mut beds: u8 = u8::MAX;
-        let mut baths = u8::MAX;
+        let mut beds = i32::MAX;
+        let mut baths = i32::MAX;
         let mut sqft = u32::MAX;
         let mut lot_size = -1_i32;
         for e in stat_elems {
             let stat_str = e.inner_html();
             // Number of bedrooms
-            if stat_str.contains("beds") {
-                beds = stat_str.chars().next().unwrap().to_digit(10).unwrap() as u8;
+            if stat_str.contains("beds") || stat_str.contains("bed") {
+                let beds_res = stat_str.chars().next().unwrap().to_digit(10);
+                beds = match beds_res {
+                    None => -1,
+                    Some(num) => num as i32
+                }
             }
             // Number of Bathrooms
-            else if stat_str.contains("baths") {
-                baths = stat_str.chars().next().unwrap().to_digit(10).unwrap() as u8;
+            else if stat_str.contains("baths") || stat_str.contains("bath") {
+                let baths_res = stat_str.chars().next().unwrap().to_digit(10);
+                baths = match baths_res {
+                    None => -1,
+                    Some(num) => num as i32
+                }
             }
 
             // Lot Size
@@ -79,6 +93,7 @@ impl HomeListing {
             
             // House Sqftage
             // won't be reached on lots measured in sqftage
+            // Can sometimes be null if house is being constructed
             else if stat_str.contains("sq ft") {
                 let split_items:Vec<&str> = stat_str.split(" ").collect();
                 if split_items.len() != 3 {
@@ -86,10 +101,19 @@ impl HomeListing {
                     assert_eq!(split_items.len(), 3); // Should be [target_num, "sq", "ft"]
                 }
                 
-                sqft = split_items.first().unwrap().replace(",", "").parse().unwrap();
+                let sqft_res: Result<u32, _> = split_items.first().unwrap().replace(",", "").parse();
+                sqft = match sqft_res.is_err() {
+                    true => 0,
+                    false => sqft_res.unwrap()
+                }
             }
 
             else { warn!("Unrecognized stat: {}", stat_str); }
+        }
+
+        // unset sqft means no house, just lot
+        if sqft == u32::MAX {
+            sqft = 0;
         }
         
 
@@ -134,20 +158,20 @@ impl HomeListing {
             zip,
         };
         
-        assert_ne!(beds, u8::MAX);
-        assert_ne!(baths, u8::MAX);
+        assert_ne!(beds, i32::MAX);
+        assert_ne!(baths, i32::MAX);
         assert_ne!(sqft, u32::MAX);
         assert_ne!(sqft as i32, lot_size);
         trace!("Redfin Listing extracted");
 
-        HomeListing {
+        Ok(HomeListing {
             price,
             beds,
             baths,
             sqft,
             lot_size,
             address: addr_obj,
-        }
+        })
         
         
     }
@@ -163,8 +187,8 @@ pub(crate) struct ListingsContainer {
 impl Default for ListingsContainer {
     fn default() -> Self {
         let price_col = Series::new_empty("price", &DataType::UInt32);
-        let beds_col = Series::new_empty("beds", &DataType::UInt8);
-        let baths_col = Series::new_empty("baths", &DataType::UInt8);
+        let beds_col = Series::new_empty("beds", &DataType::Int32);
+        let baths_col = Series::new_empty("baths", &DataType::Int32);
         let sqft_col = Series::new_empty("sqft", &DataType::UInt32);
         let lot_size_col = Series::new_empty("lot_size", &DataType::Int32);
         let street_col = Series::new_empty("street", &DataType::Utf8);
@@ -172,6 +196,7 @@ impl Default for ListingsContainer {
         let city_col = Series::new_empty("city", &DataType::Utf8);
         let state_col = Series::new_empty("state", &DataType::Utf8);
         let zip_col = Series::new_empty("zip", &DataType::UInt32);
+
         let cols = vec![price_col, beds_col, baths_col, sqft_col, lot_size_col, street_col, apt_col, city_col, state_col, zip_col];
         Self { queue: vec![], data: DataFrame::new(cols).expect("failed to create default df") }
     }
@@ -194,7 +219,6 @@ impl ListingsContainer {
     }
     /// Adds all listing objects in queue to data as new rows
     /// empties queue
-    /// TODO: Handle Address
     pub(crate) fn handle_queue(&mut self) {
         let mut prices = vec![];
         let mut beds = vec![];
@@ -207,7 +231,6 @@ impl ListingsContainer {
         let mut city = vec![];
         let mut state = vec![];
         let mut zip = vec![];
-        // let mut address = vec![];
         
         // Order doesn't matter, can be parrelized
         self.queue.iter().for_each(|listing| {
@@ -250,7 +273,7 @@ impl ListingsContainer {
     }
 
     pub(crate) fn to_csv(&mut self, path: &str) {
-        let mut file = File::create(path).expect("asdf");
+        let mut file = File::create(path).expect("file creation failed");
 
         if CsvWriter::new(&mut file)
             .finish(&mut self.data).is_err() {
