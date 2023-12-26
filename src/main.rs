@@ -67,7 +67,7 @@ async fn main() {
     listings_container.handle_queue();
     println!("{:?}", listings_container.data.shape());
     
-    listings_container.to_csv();
+    listings_container.to_csv("out.csv");
 
 
     

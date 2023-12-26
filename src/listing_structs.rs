@@ -214,18 +214,19 @@ impl ListingsContainer {
         let baths = Series::new("baths", baths);
         let sqft = Series::new("sqft", sqft);
         let lot_size = Series::new("lot_size", lot_size);
-        let new_data = DataFrame::new(vec![prices, beds, baths, sqft, lot_size]).unwrap();
+        let new_listings_df = DataFrame::new(vec![prices, beds, baths, sqft, lot_size]).unwrap();
 
         // Add rows to dataframe
-        self.data = self.data.vstack(&new_data).expect("failed to concat new listings");
+        self.data = self.data.vstack(&new_listings_df).expect("failed to concat new listings");
 
         // Clear Queue
         self.queue.clear();
+        assert!(self.queue.is_empty());
 
     }
 
-    pub(crate) fn to_csv(&mut self) {
-        let mut file = File::create("out.csv").expect("asdf");
+    pub(crate) fn to_csv(&mut self, path: &str) {
+        let mut file = File::create(path).expect("asdf");
 
         if CsvWriter::new(&mut file)
             .finish(&mut self.data).is_err() {
