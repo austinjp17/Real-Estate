@@ -88,10 +88,10 @@ pub(crate) fn get_page_homes(parsed_html: &Html) -> Vec<HomeListing> {
     // Start from 1 b/c focused home uncounted
     let mut i = 1;
     for home_elem in unfocused_homes {
-        if let Ok(listing) = HomeListing::from_redfin(&home_elem) {
-            listings.push(listing)
-        } else {
-            warn!("Skipping listing")
+        let extraction_res = HomeListing::from_redfin(&home_elem);
+        match extraction_res.is_ok() {
+            true => listings.push(extraction_res.unwrap()),
+            false => warn!("Skipping listing: {:?}", extraction_res.unwrap_err())
         }
         i += 1;
     }

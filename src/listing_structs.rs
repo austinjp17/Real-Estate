@@ -3,8 +3,8 @@ use scraper::{Html, Selector, ElementRef};
 use polars::prelude::*;
 use tracing::{info, trace, warn};
 use std::{collections::VecDeque, fs::File};
-use anyhow::{Result, anyhow};
 
+#[derive(Debug)]
 pub(crate) struct HomeAddress {
     street: String,
     apt: i32,
@@ -13,6 +13,7 @@ pub(crate) struct HomeAddress {
     zip: u32,//[u8; 5],
 }
 
+#[derive(Debug)]
 pub(crate) struct HomeListing {
     price: u32,
     beds: i32,
@@ -22,9 +23,18 @@ pub(crate) struct HomeListing {
     address: HomeAddress
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum ExtractionError {
+    Price(String),
+    Address
+}
+
 impl HomeListing {
     /// Takes parsed HTML from a redfin listing and extracts key elements
-    pub(crate) fn from_redfin(home_elem: &ElementRef) -> Result<Self> {
+    /// 
+    /// Currently only returns error if Price is not found
+    /// Sets null values if any of category is not found
+    pub(crate) fn from_redfin(home_elem: &ElementRef) -> Result<Self, ExtractionError> {
         // extract price
         let mut price = u32::MAX;
         let price_id = r#"span[class="homecardV2Price"]"#;
@@ -33,7 +43,8 @@ impl HomeListing {
         if let Ok(p) = (&price_str[1..]).replace(',', "").parse::<u32>() {
             price = p
         } else {
-            return Err(anyhow!("Price parsing error"));
+            let price_err = ExtractionError::Price(price_str);
+            return Err(price_err);
         }
 
         // Get Stats (beds, baths, sqftage, lot size)
@@ -49,7 +60,7 @@ impl HomeListing {
         for e in stat_elems {
             let stat_str = e.inner_html();
             // Number of bedrooms
-            if stat_str.contains("beds") || stat_str.contains("bed") {
+            if stat_str.contains("bed") || stat_str.contains("beds") {
                 let beds_res = stat_str.chars().next().unwrap().to_digit(10);
                 beds = match beds_res {
                     None => -1,
@@ -57,7 +68,7 @@ impl HomeListing {
                 }
             }
             // Number of Bathrooms
-            else if stat_str.contains("baths") || stat_str.contains("bath") {
+            else if stat_str.contains("bath") || stat_str.contains("baths") {
                 let baths_res = stat_str.chars().next().unwrap().to_digit(10);
                 baths = match baths_res {
                     None => -1,
@@ -135,7 +146,7 @@ impl HomeListing {
         let apt = if addr_components.len() == 4 {
             -1
         } else {
-            info!("Apartment found");
+            warn!("Apartment found");
             addr_components.remove(2).unwrap().parse().unwrap()
         };
         
