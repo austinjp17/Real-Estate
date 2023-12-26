@@ -6,10 +6,10 @@ use std::{collections::VecDeque, fs::File};
 
 pub(crate) struct HomeAddress {
     street: String,
-    apt: Option<u16>,
+    apt: i32,
     city: String,
     state: String,
-    zip: Vec<u8>,//[u8; 5],
+    zip: u32,//[u8; 5],
 }
 
 pub(crate) struct HomeListing {
@@ -17,7 +17,7 @@ pub(crate) struct HomeListing {
     beds: u8,
     baths: u8,
     sqft: u32,
-    lot: Option<u32>,
+    lot_size: Option<u32>,
     address: HomeAddress
 }
 
@@ -39,7 +39,7 @@ impl HomeListing {
         let mut beds: u8 = u8::MAX;
         let mut baths = u8::MAX;
         let mut sqft = u32::MAX;
-        let mut lot: Option<u32> = None;
+        let mut lot_size: Option<u32> = None;
         for e in stat_elems {
             let stat_str = e.inner_html();
             // Number of bedrooms
@@ -60,7 +60,7 @@ impl HomeListing {
                 
                 // if len split is 4 then lot measured in sqft (Desired)
                 if split_items.len() == 4 {
-                    lot = Some(split_items.first().unwrap().replace(",", "").parse::<u32>().expect("failed to parse"));
+                    lot_size = Some(split_items.first().unwrap().replace(",", "").parse::<u32>().expect("failed to parse"));
                 }
 
                 // if 3, then measured in acreage
@@ -69,7 +69,7 @@ impl HomeListing {
                     fn acre_to_sqft(acres: f32) -> u32 { (acres * 43460_f32) as u32 }
 
                     let lot_acres = split_items.first().unwrap().parse::<f32>().expect("failed to parse");
-                    lot = Some(acre_to_sqft(lot_acres));
+                    lot_size = Some(acre_to_sqft(lot_acres));
 
                 }
 
@@ -109,20 +109,21 @@ impl HomeListing {
         // Build Address Object
         // remove & save apt component if present
         let apt = if addr_components.len() == 4 {
-            None
+            -1
         } else {
-            Some(addr_components.remove(2).unwrap().parse().unwrap())
+            info!("Apartment found");
+            addr_components.remove(2).unwrap().parse().unwrap()
         };
         
         assert_eq!(addr_components.len(), 4); // [street, city, state, zip]
         let street = addr_components.pop_front().unwrap();
         let city = addr_components.pop_front().unwrap();
         let state = addr_components.pop_front().unwrap();
-        let zip = addr_components.pop_front().unwrap().chars().collect::<Vec<char>>().into_iter().map(|c| c.to_digit(10).unwrap() as u8).collect::<Vec<u8>>();
+        let zip: u32 = addr_components.pop_front().unwrap().parse().unwrap();
 
         // Address correctness assertions
         assert_eq!(state.chars().collect::<Vec<char>>().len(), 2); // State should always be two letters
-        assert_eq!(zip.len(), 5); // Zip should always be 5 digits
+        // assert_eq!(zip.len(), 5); // Zip should always be 5 digits
         assert!(street.chars().collect::<Vec<char>>().len() > city.chars().collect::<Vec<char>>().len());
 
         let addr_obj = HomeAddress {
@@ -132,19 +133,18 @@ impl HomeListing {
             state,
             zip,
         };
-        // println!("Price: {}", price);
-
+        
         assert_ne!(beds, u8::MAX);
         assert_ne!(baths, u8::MAX);
         assert_ne!(sqft, u32::MAX);
-        // info!("Redfin Listing extracted");
+        trace!("Redfin Listing extracted");
 
         HomeListing {
             price,
             beds,
             baths,
             sqft,
-            lot,
+            lot_size,
             address: addr_obj,
         }
         
@@ -166,7 +166,12 @@ impl Default for ListingsContainer {
         let baths_col = Series::new_empty("baths", &DataType::UInt8);
         let sqft_col = Series::new_empty("sqft", &DataType::UInt32);
         let lot_size_col = Series::new_empty("lot_size", &DataType::UInt32);
-        let cols = vec![price_col, beds_col, baths_col, sqft_col, lot_size_col];
+        let street_col = Series::new_empty("street", &DataType::Utf8);
+        let apt_col = Series::new_empty("apt", &DataType::Int32);
+        let city_col = Series::new_empty("city", &DataType::Utf8);
+        let state_col = Series::new_empty("state", &DataType::Utf8);
+        let zip_col = Series::new_empty("zip", &DataType::UInt32);
+        let cols = vec![price_col, beds_col, baths_col, sqft_col, lot_size_col, street_col, apt_col, city_col, state_col, zip_col];
         Self { queue: vec![], data: DataFrame::new(cols).expect("failed to create default df") }
     }
 }
@@ -195,6 +200,12 @@ impl ListingsContainer {
         let mut baths = vec![];
         let mut sqft = vec![];
         let mut lot_size = vec![];
+        // Address Components
+        let mut street = vec![];
+        let mut apt = vec![];
+        let mut city = vec![];
+        let mut state = vec![];
+        let mut zip = vec![];
         // let mut address = vec![];
         
         // Order doesn't matter, can be parrelized
@@ -204,6 +215,11 @@ impl ListingsContainer {
             baths.push(listing.baths);
             sqft.push(listing.sqft);
             lot_size.push(listing.sqft);
+            street.push(listing.address.street.clone());
+            apt.push(listing.address.apt);
+            city.push(listing.address.city.clone());
+            state.push(listing.address.state.clone());
+            zip.push(listing.address.zip.clone())
         });
 
         // All vecs same len
@@ -214,7 +230,14 @@ impl ListingsContainer {
         let baths = Series::new("baths", baths);
         let sqft = Series::new("sqft", sqft);
         let lot_size = Series::new("lot_size", lot_size);
-        let new_listings_df = DataFrame::new(vec![prices, beds, baths, sqft, lot_size]).unwrap();
+        let street = Series::new("street", street);
+        let apt = Series::new("apt", apt);
+        let city = Series::new("city", city);
+        let state = Series::new("state", state);
+        let zip = Series::new("zip", zip);
+
+        let cols = vec![prices, beds, baths, sqft, lot_size, street, apt, city, state, zip];
+        let new_listings_df = DataFrame::new(cols).unwrap();
 
         // Add rows to dataframe
         self.data = self.data.vstack(&new_listings_df).expect("failed to concat new listings");
