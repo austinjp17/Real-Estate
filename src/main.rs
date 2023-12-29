@@ -1,11 +1,5 @@
-use std::{collections::VecDeque, fs::File};
-
-
-use polars::io::csv::CsvWriter;
-use tracing::{info, trace, warn};
+use listing_structs::ListingsContainer;
 use tracing_subscriber;
-
-
 
 mod redfin;
 mod listing_structs;
@@ -26,12 +20,14 @@ async fn main() {
         .with_target(false)
         .init();
 
-    
-
-    
     // println!("{:?}", listings_container.data.shape());
-    let mut listings_container = redfin::homes_by_zip(77532).await;
-    listings_container.to_csv("out.csv");
+    
+    let mut listings_container = ListingsContainer::default();
+    listings_container.initialize_dataset();
+
+    listings_container.homes_by_zip(77532).await;
+
+    // listings_container.to_csv("out.csv");
 
 
     

@@ -3,8 +3,16 @@ use scraper::{Html, Selector, ElementRef};
 use polars::prelude::*;
 use tracing::{info, trace, warn};
 use std::{collections::VecDeque, fs::File};
+use chrono::{Local, DateTime};
 
-#[derive(Debug)]
+
+#[derive(Debug, Clone)]
+pub(crate) enum ExtractionError {
+    Price(String),
+    Address(String)
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct HomeAddress {
     street: String,
     apt: i32,
@@ -13,39 +21,63 @@ pub(crate) struct HomeAddress {
     zip: u32,//[u8; 5],
 }
 
+impl Into<String> for HomeAddress {
+    fn into(self) -> String {
+        match self.apt {
+            -1 => format!("{}, {}, {} {}", self.street, self.city, self.state, self.zip),
+            _ => {
+                warn!("Formatting address with apt to string");
+                format!("{}, {}, {}, {} {}", self.street, self.apt, self.city, self.state, self.zip)
+            }
+        }
+        
+    }
+}
+
+// Define a struct to represent historical price data.
+#[derive(Debug)]
+struct PriceHistory {
+    price: u32,
+    date: DateTime<Local>,
+}
+
+impl PriceHistory {
+    fn new(price: u32, date: DateTime<Local>) -> Self {
+        PriceHistory {
+            price,
+            date
+        }
+    }
+}
+
+impl Into<(DateTime<Local>, u32)> for PriceHistory {
+    fn into(self) -> (DateTime<Local>, u32) {
+        (self.date, self.price)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct HomeListing {
-    price: u32,
+    current_price: u32,
     beds: i32,
     baths: i32,
     sqft: u32,
     lot_size: i32,
-    address: HomeAddress
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum ExtractionError {
-    Price(String),
-    Address
+    address: HomeAddress,
+    price_history: Vec<PriceHistory>
 }
 
 impl HomeListing {
+    
     /// Takes parsed HTML from a redfin listing and extracts key elements
     /// 
     /// Currently only returns error if Price is not found
     /// Sets null values if any of category is not found
-    pub(crate) fn from_redfin(home_elem: &ElementRef) -> Result<Self, ExtractionError> {
+    pub(crate) fn new_from_redfin(home_elem: &ElementRef) -> Result<Self, ExtractionError> {
         // extract price
-        let mut price = u32::MAX;
-        let price_id = r#"span[class="homecardV2Price"]"#;
-        let price_sel = Selector::parse(price_id).unwrap();
-        let price_str = home_elem.select(&price_sel).next().unwrap().inner_html();
-        if let Ok(p) = (&price_str[1..]).replace(',', "").parse::<u32>() {
-            price = p
-        } else {
-            let price_err = ExtractionError::Price(price_str);
-            return Err(price_err);
-        }
+        let current_price = extract_redfin_price(&home_elem)?;
+        let date = Local::now();
+        let price_history = vec![PriceHistory::new(current_price, date)];
 
         // Get Stats (beds, baths, sqftage, lot size)
         let stats_id = r#"div[class="stats"]"#;
@@ -127,48 +159,11 @@ impl HomeListing {
             sqft = 0;
         }
         
-
         // Get Address
-        let address_id = r#"span[class="collapsedAddress primaryLine"]"#;
-        let address_sel = Selector::parse(address_id).unwrap();
-        let address_str = home_elem.select(&address_sel).next().unwrap().inner_html();
+        let addr_str = extract_redfin_address_str(home_elem)?;
+        let addr_obj = parse_redfin_address_str(home_elem)?;
         
-        // Parse address
-        // Initally 3 compenents: [street, city, (state zip)]
-        let mut addr_components = address_str.split(",").map(|a| a.trim().to_string()).collect::<VecDeque<String>>();
-        // split state and zip
-        let mut zip_state_expansion = addr_components.pop_back().unwrap().split(" ").map(|s| s.to_string()).collect::<VecDeque<String>>(); 
-        addr_components.append(&mut zip_state_expansion);
-
-
-        // Build Address Object
-        // remove & save apt component if present
-        let apt = if addr_components.len() == 4 {
-            -1
-        } else {
-            warn!("Apartment found");
-            addr_components.remove(2).unwrap().parse().unwrap()
-        };
-        
-        assert_eq!(addr_components.len(), 4); // [street, city, state, zip]
-        let street = addr_components.pop_front().unwrap();
-        let city = addr_components.pop_front().unwrap();
-        let state = addr_components.pop_front().unwrap();
-        let zip: u32 = addr_components.pop_front().unwrap().parse().unwrap();
-
-        // Address correctness assertions
-        assert_eq!(state.chars().collect::<Vec<char>>().len(), 2); // State should always be two letters
-        // assert_eq!(zip.len(), 5); // Zip should always be 5 digits
-        assert!(street.chars().collect::<Vec<char>>().len() > city.chars().collect::<Vec<char>>().len());
-
-        let addr_obj = HomeAddress {
-            street,
-            apt,
-            city,
-            state,
-            zip,
-        };
-        
+        // Checks
         assert_ne!(beds, i32::MAX);
         assert_ne!(baths, i32::MAX);
         assert_ne!(sqft, u32::MAX);
@@ -176,46 +171,42 @@ impl HomeListing {
         trace!("Redfin Listing extracted");
 
         Ok(HomeListing {
-            price,
+            current_price,
             beds,
             baths,
             sqft,
             lot_size,
             address: addr_obj,
+            price_history,
         })
         
         
     }
-
 }
 
 
 pub(crate) struct ListingsContainer {
     pub(crate) queue: Vec<HomeListing>, // replace w/ Multiproducer single consumer??
     pub(crate) data: DataFrame,
+    pub(crate) last_update: Option<DateTime<Local>>
 }
 
 impl Default for ListingsContainer {
     fn default() -> Self {
-        let price_col = Series::new_empty("price", &DataType::UInt32);
-        let beds_col = Series::new_empty("beds", &DataType::Int32);
-        let baths_col = Series::new_empty("baths", &DataType::Int32);
-        let sqft_col = Series::new_empty("sqft", &DataType::UInt32);
-        let lot_size_col = Series::new_empty("lot_size", &DataType::Int32);
-        let street_col = Series::new_empty("street", &DataType::Utf8);
-        let apt_col = Series::new_empty("apt", &DataType::Int32);
-        let city_col = Series::new_empty("city", &DataType::Utf8);
-        let state_col = Series::new_empty("state", &DataType::Utf8);
-        let zip_col = Series::new_empty("zip", &DataType::UInt32);
-
-        let cols = vec![price_col, beds_col, baths_col, sqft_col, lot_size_col, street_col, apt_col, city_col, state_col, zip_col];
-        Self { queue: vec![], data: DataFrame::new(cols).expect("failed to create default df") }
+        // TODO: Schema instead ??
+        
+        Self { 
+            queue: vec![], 
+            data: DataFrame::empty(),
+            last_update: None
+        }
     }
 }
 
 impl ListingsContainer {
+    /// Empty, no columns, dataframe
     pub(crate) fn new(queue: Vec<HomeListing>, data: DataFrame) -> Self {
-        ListingsContainer { queue, data }
+        ListingsContainer { queue, data, last_update: None }
     }
 
     pub(crate) fn enqueue(&mut self, new_listings: &mut Vec<HomeListing>) {
@@ -228,7 +219,9 @@ impl ListingsContainer {
         assert_eq!(self.queue.len(), expected_queue_len);
         
     }
+
     /// Adds all listing objects in queue to data as new rows
+    /// 
     /// empties queue
     pub(crate) fn handle_queue(&mut self) {
         let mut prices = vec![];
@@ -242,10 +235,11 @@ impl ListingsContainer {
         let mut city = vec![];
         let mut state = vec![];
         let mut zip = vec![];
+        let mut addr_str: Vec<String> = vec![];
         
         // Order doesn't matter, can be parrelized
         self.queue.iter().for_each(|listing| {
-            prices.push(listing.price);
+            prices.push(listing.current_price);
             beds.push(listing.beds);
             baths.push(listing.baths);
             sqft.push(listing.sqft);
@@ -254,7 +248,10 @@ impl ListingsContainer {
             apt.push(listing.address.apt);
             city.push(listing.address.city.clone());
             state.push(listing.address.state.clone());
-            zip.push(listing.address.zip.clone())
+            zip.push(listing.address.zip.clone());
+            // TODO: FIX
+            // Clones entire object, then consumes clone to create string
+            addr_str.push(listing.address.clone().into()); 
         });
 
         // All vecs same len
@@ -270,8 +267,9 @@ impl ListingsContainer {
         let city = Series::new("city", city);
         let state = Series::new("state", state);
         let zip = Series::new("zip", zip);
+        let addr_str = Series::new("addr_str", addr_str);
 
-        let cols = vec![prices, beds, baths, sqft, lot_size, street, apt, city, state, zip];
+        let cols = vec![prices, beds, baths, sqft, lot_size, street, apt, city, state, zip, addr_str];
         let new_listings_df = DataFrame::new(cols).unwrap();
 
         // Add rows to dataframe
@@ -292,4 +290,68 @@ impl ListingsContainer {
             }
         
     }
+
+    pub(crate) fn print_data_head(&self) {
+        println!("{:?}", self.data.head(None))
+    }
 }
+
+fn extract_redfin_price(home_elem: &ElementRef) -> Result<u32, ExtractionError> { 
+    let price_id = r#"span[class="homecardV2Price"]"#;
+    let price_sel = Selector::parse(price_id).unwrap();
+    let price_str = home_elem.select(&price_sel).next().unwrap().inner_html();
+    let parsed_price = {
+        let cleaned_price_str = (&price_str[1..]).replace(',', "");
+        cleaned_price_str.parse::<u32>().map_err(|_| ExtractionError::Price(price_str))
+    };
+
+    parsed_price
+}
+
+pub(crate) fn extract_redfin_address_str(home_elem: &ElementRef) -> Result<String, ExtractionError> {
+        // Get Address
+        let address_id = r#"span[class="collapsedAddress primaryLine"]"#;
+        let address_sel = Selector::parse(address_id).expect("valid above html");
+        let address_str = home_elem.select(&address_sel).next().unwrap().inner_html(); // TODO: handle address not found error
+        Ok(address_str)
+        
+    
+}
+
+fn parse_redfin_address_str(home_elem: &ElementRef) -> Result<HomeAddress, ExtractionError> {
+    let address_str = extract_redfin_address_str(home_elem)?;
+    // Parse address
+    // Initally 3 compenents: [street, city, (state zip)]
+    let mut addr_components = address_str.split(",").map(|a| a.trim().to_string()).collect::<VecDeque<String>>();
+    // split state and zip
+    let mut zip_state_expansion = addr_components.pop_back().unwrap().split(" ").map(|s| s.to_string()).collect::<VecDeque<String>>(); 
+    addr_components.append(&mut zip_state_expansion);
+    // Build Address Object
+    // remove & save apt component if present
+    let apt = if addr_components.len() == 4 {
+        -1
+    } else {
+        warn!("Apartment found");
+        addr_components.remove(2).unwrap().parse().unwrap()
+    };
+    
+    assert_eq!(addr_components.len(), 4); // [street, city, state, zip]
+    let street = addr_components.pop_front().unwrap();
+    let city = addr_components.pop_front().unwrap();
+    let state = addr_components.pop_front().unwrap();
+    let zip: u32 = addr_components.pop_front().unwrap().parse().unwrap();
+
+    // Address correctness assertions
+    assert_eq!(state.chars().collect::<Vec<char>>().len(), 2); // State should always be two letters
+    // assert_eq!(zip.len(), 5); // Zip should always be 5 digits
+    assert!(street.chars().collect::<Vec<char>>().len() > city.chars().collect::<Vec<char>>().len());
+
+    Ok(HomeAddress {
+        street,
+        apt,
+        city,
+        state,
+        zip,
+    })
+}
+

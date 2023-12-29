@@ -1,8 +1,9 @@
-use scraper::{Html, Selector};
+use scraper::{Html, Selector, ElementRef};
 use tracing::{info, trace, warn};
 use tracing_subscriber;
 use polars::prelude::*;
-use crate::{listing_structs::{HomeListing, ListingsContainer}, helpers};
+use crate::{listing_structs::{HomeListing, ListingsContainer, extract_redfin_address_str}, helpers};
+
 
 #[derive(Debug, Copy, Clone)]
 enum SearchBy {
@@ -44,10 +45,109 @@ pub(crate) fn url_builder(search_category: SearchBy, search_target: u32, page_nu
 }
 
 
-/// contains text: "Viewing page x of n" in page control div
-/// extracts, parses, and returns n
+impl ListingsContainer {
+    
+    pub(crate) fn house_exisits_in_dataset(&self, home_elem: &ElementRef) -> bool {
+        let addr_str = extract_redfin_address_str(home_elem).expect("address failed to extract");
+        match self.data.clone().lazy().filter(
+            col("addr_str").eq(lit(addr_str))
+        ).collect().unwrap().is_empty() {
+            true => false,
+            false => true
+        }
 
-pub(crate) fn get_page_count(parsed_html: &Html) -> u8 {
+        
+    }
+
+    /// Gets all home listings from a redfin page and adds them as 'HomeListing' objects
+    /// to self.queue
+    pub(crate) fn parse_redfin_page(&mut self, parsed_html: &Html) {
+        let mut listings: Vec<HomeListing> = vec![];
+
+        let unfocused_home_card_div = r#"div[class="HomeCardContainer defaultSplitMapListView"]"#;
+        let unfocused_home_selector = Selector::parse(unfocused_home_card_div).unwrap();
+
+        let focused_home_card_div = r#"div[class="HomeCardContainer selectedHomeCard defaultSplitMapListView"]"#;
+        let focused_home_selector = Selector::parse(focused_home_card_div).unwrap();
+
+        let mut focused_home = parsed_html.select(&focused_home_selector);
+        let unfocused_homes = parsed_html.select(&unfocused_home_selector);
+
+        let focused_home = focused_home.next().unwrap();
+        match self.house_exisits_in_dataset(&focused_home) {
+            true => todo!(), // scrape price and add to price history vec
+            false => {
+                if let Ok(listing) = HomeListing::new_from_redfin(&focused_home) {
+                    self.queue.push(listing)
+                }
+            }
+        };
+        
+
+        // Start from 1 b/c focused home uncounted
+        let mut i = 1;
+        for home_elem in unfocused_homes {
+            // If home already exists in dataset
+            match self.house_exisits_in_dataset(&home_elem) {
+                true => todo!(), // scrape price and add to price history vec
+
+                // Create new row entry
+                false => {
+                    let extraction_res = HomeListing::new_from_redfin(&home_elem);
+                    match extraction_res.is_ok() {
+                        true => listings.push(extraction_res.unwrap()),
+                        false => warn!("Skipping listing: {:?}", extraction_res.unwrap_err())
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        info!("Number of houses on page found: {}", i);
+    }
+    
+    /// Gets all redfin home listings for a given zipcode
+    /// 
+    /// Calls parse_redfin_page on all found pages then handles all elements in self.queue
+    pub(crate) async fn homes_by_zip(&mut self, zipcode: u32) {
+
+        // First run gets number of pages
+        let url = url_builder(SearchBy::Zipcode, zipcode, None);
+        let request_result = helpers::request(&url).await;
+        if request_result.is_err() { 
+            let e = request_result.unwrap_err();
+            warn!("Request Error: {}", &e);
+            panic!("Request Error: {}", e); 
+        }
+
+        let response = request_result.expect("conditioned");
+        
+        let page_count = get_redfin_page_count(&response);
+        self.parse_redfin_page(&response);
+
+        for page_num in 2..=page_count {
+            let url = url_builder(SearchBy::Zipcode, zipcode, Some(page_num));
+            let request_result = helpers::request(&url).await;
+            if request_result.is_err() { 
+                let e = request_result.expect_err("Conditioned for");
+                warn!("Request Error: {}", &e);
+                panic!("Request Error: {}", e); 
+            }
+            let response = request_result.expect("conditioned");
+            self.parse_redfin_page(&response);
+        };
+
+        
+        self.handle_queue();
+
+    }
+
+    
+
+}
+
+
+pub(crate) fn get_redfin_page_count(parsed_html: &Html) -> u8 {
     
     // Define Target Span & build html selector
     let page_count_span = r#"span[class="pageText"]"#;
@@ -65,82 +165,4 @@ pub(crate) fn get_page_count(parsed_html: &Html) -> u8 {
     
     info!("Number of pages found: {}", page_count);
     page_count
-}
-
-pub(crate) fn get_page_homes(parsed_html: &Html) -> Vec<HomeListing> {
-    let mut listings: Vec<HomeListing> = vec![];
-
-    let unfocused_home_card_div = r#"div[class="HomeCardContainer defaultSplitMapListView"]"#;
-    let unfocused_home_selector = Selector::parse(unfocused_home_card_div).unwrap();
-
-    let focused_home_card_div = r#"div[class="HomeCardContainer selectedHomeCard defaultSplitMapListView"]"#;
-    let focused_home_selector = Selector::parse(focused_home_card_div).unwrap();
-
-    let mut focused_home = parsed_html.select(&focused_home_selector);
-    let unfocused_homes = parsed_html.select(&unfocused_home_selector);
-
-    let focused_home = focused_home.next().unwrap();
-    
-    if let Ok(listing) = HomeListing::from_redfin(&focused_home) {
-        listings.push(listing)
-    }
-
-    // Start from 1 b/c focused home uncounted
-    let mut i = 1;
-    for home_elem in unfocused_homes {
-        let extraction_res = HomeListing::from_redfin(&home_elem);
-        match extraction_res.is_ok() {
-            true => listings.push(extraction_res.unwrap()),
-            false => warn!("Skipping listing: {:?}", extraction_res.unwrap_err())
-        }
-        i += 1;
-    }
-
-    info!("Number of houses on page found: {}", i);
-
-    listings
-}
-
-pub(crate) async fn homes_by_zip(zipcode: u32) -> ListingsContainer {
-    // Holds all home listings
-    let mut listings_container = ListingsContainer::default();
-
-    // First run gets number of pages
-    let url = url_builder(SearchBy::Zipcode, zipcode, None);
-    let request_result = helpers::request(&url).await;
-    if request_result.is_err() { 
-        let e = request_result.expect_err("Conditioned for");
-        warn!("Request Error: {}", &e);
-        panic!("Request Error: {}", e); 
-    }
-
-    let response = request_result.expect("conditioned");
-    
-    let page_count = get_page_count(&response);
-    let mut new_listings = get_page_homes(&response);
-    listings_container.enqueue(&mut new_listings);
-    listings_container.handle_queue();
-
-    for page_num in 2..=page_count {
-        let url = url_builder(SearchBy::Zipcode, zipcode, Some(page_num));
-        let mut new_listings = fetch_and_process(&url).await;
-        listings_container.enqueue(&mut new_listings);
-        listings_container.handle_queue();
-    };
-
-    listings_container
-}
-
-async fn fetch_and_process(url: &str) -> Vec<HomeListing> {
-    let request_result = helpers::request(url).await;
-    if request_result.is_err() { 
-        let e = request_result.expect_err("Conditioned for");
-        warn!("Request Error: {}", &e);
-        panic!("Request Error: {}", e); 
-    }
-    let response = request_result.expect("conditioned");
-    let mut new_listings = get_page_homes(&response);
-    new_listings
-    // listings_container.enqueue(&mut new_listings);
-    // listings_container.handle_queue();
 }
