@@ -1,6 +1,7 @@
 use listing_structs::ListingsContainer;
 use tracing_subscriber;
-
+use std::env;
+use tracing::info;
 mod redfin;
 mod listing_structs;
 mod helpers;
@@ -20,9 +21,17 @@ async fn main() {
         .with_target(false)
         .init();
 
-    // println!("{:?}", listings_container.data.shape());
-    
-    let mut listings_container = ListingsContainer::default();
+    // Parse Args
+    let args: Vec<String> = env::args().collect();
+    println!("Args: {:?}", args);
+
+    let mut force_refresh = false;
+    if args.contains(&String::from("force_refresh")) {
+        force_refresh = true;
+        info!("Data reset flag set");
+    }
+
+    let mut listings_container = ListingsContainer::new(force_refresh);
     listings_container.initialize_dataset();
 
     listings_container.homes_by_zip(77532).await;
