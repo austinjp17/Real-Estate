@@ -139,7 +139,7 @@ impl ListingsContainer {
     
     pub(crate) fn house_exisits_in_dataset(&self, home_elem: &ElementRef) -> bool {
         let addr_str = extract_redfin_address_str(home_elem).expect("address failed to extract");
-        match self.data.clone().lazy().filter(
+        match self.listing_features.clone().lazy().filter(
             col("addr_str").eq(lit(addr_str))
         ).collect().unwrap().is_empty() {
             true => false,
@@ -219,7 +219,7 @@ impl ListingsContainer {
         let page_count = get_redfin_page_count(&response);
         self.parse_redfin_page(&response);
         self.handle_queue();
-        
+
         for page_num in 2..=page_count {
             let url = url_builder(SearchBy::Zipcode, zipcode, Some(page_num));
             let request_result = helpers::request(&url).await;

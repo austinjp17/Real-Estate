@@ -28,15 +28,16 @@ pub(crate) async fn request(target_url: &str) -> Result<Html> {
 }
 
 impl ListingsContainer {
-    pub(crate) fn initialize_dataset(&mut self) {
+    pub(crate) fn initialize_datasets(&mut self) {
             
         // If local data exists, pull it in
         
+        // Initalize local feature data
         if !self.force_refresh {
-            if let Ok(local_data) = CsvReader::from_path("out/listing_dataset.csv"){
-                if let Ok(parsed) = local_data.has_header(true).finish() {
+            if let Ok(local_feature_data) = CsvReader::from_path("out/listing_features.csv"){
+                if let Ok(features_df) = local_feature_data.has_header(true).finish() {
                     
-                    self.data = parsed;
+                    self.listing_features = features_df;
                     // TODO: Price History col
                     // let last = self.data["price_history"].get(0).unwrap(); 
                     // info!("HERE: {:?}", last);
@@ -45,35 +46,68 @@ impl ListingsContainer {
                     // let expected_cols: Vec<&str> = vec![];
                     // assert_eq!(expected_cols, self.data.get_column_names());
 
-                    info!("Local data initialized, shape: {:?}", self.data.shape())
+                    info!("Local data initialized, shape: {:?}", self.listing_features.shape())
                     
                 }
             }
         }
         // Else assign empty col dataframe
         else {
-            info!("Local data ignored/not found.");
+            info!("Local feature data ignored/not found.");
 
-            let price_col = Series::new_empty("price", &DataType::UInt32);
-            let beds_col = Series::new_empty("beds", &DataType::Int32);
-            let baths_col = Series::new_empty("baths", &DataType::Int32);
-            let sqft_col = Series::new_empty("sqft", &DataType::UInt32);
-            let lot_size_col = Series::new_empty("lot_size", &DataType::Int32);
-            let street_col = Series::new_empty("street", &DataType::Utf8);
-            let apt_col = Series::new_empty("apt", &DataType::Int32);
-            let city_col = Series::new_empty("city", &DataType::Utf8);
-            let state_col = Series::new_empty("state", &DataType::Utf8);
-            let zip_col = Series::new_empty("zip", &DataType::UInt32);
-            let addr_str_col = Series::new_empty("addr_str", &DataType::Utf8);
-            // let price_history_col = Series::new_empty("price_history", &DataType::Struct());
-            let price_history_col = Series::new_empty("historical_prices", &DataType::List(Box::new(DataType::UInt16)));
-            let date_history_col = Series::new_empty("historical_dates", &DataType::List(Box::new(DataType::Date)));
+            let feature_schema = vec![
+                ("beds", &DataType::Int32),
+                ("baths", &DataType::Int32),
+                ("sqft", &DataType::UInt32),
+                ("lot_size", &DataType::Int32),
+                ("street", &DataType::Utf8),
+                ("apt", &DataType::Int32),
+                ("city", &DataType::Utf8),
+                ("state", &DataType::Utf8),
+                ("zip", &DataType::UInt32),
+                ("addr_str", &DataType::Utf8),
+            ];
 
-            let cols = vec![price_col, beds_col, baths_col, sqft_col, lot_size_col, street_col, 
-            apt_col, city_col, state_col, zip_col, addr_str_col, price_history_col, date_history_col];
-
-            self.data = DataFrame::new(cols).expect("Failed to create empty default");
+            let feature_cols: Vec<Series> = feature_schema
+                .iter()
+                .map(|(col_name, dtype)| Series::new_empty(&col_name, &dtype))
+                .collect();
+            
+            self.listing_features = DataFrame::new(feature_cols).expect("Failed to create empty default");
         }
+
+        // Initalize local historical data
+        if !self.force_refresh {
+            if let Ok(local_hist_data) = CsvReader::from_path("out/listing_history.csv"){
+                if let Ok(hist_df) = local_hist_data.has_header(true).finish() {
+                    
+                    self.listing_history = hist_df;
+                    // TODO: Price History col
+                    // let last = self.data["price_history"].get(0).unwrap(); 
+                    // info!("HERE: {:?}", last);
+                    
+                    // // Check for expected columns
+                    // let expected_cols: Vec<&str> = vec![];
+                    // assert_eq!(expected_cols, self.data.get_column_names());
+
+                    info!("Local data initialized, shape: {:?}", self.listing_history.shape())
+                    
+                }
+            }
+        }
+
+        else {
+            info!("Local price history data ignored/not found.");
+            let hist_schema = vec![
+                ("addr_str", &DataType::Utf8), 
+                ("date", &DataType::UInt32),
+                ("price", &DataType::UInt32),
+            ];
+            
+            let hist_cols: Vec<Series> = hist_schema.iter().map(|(col_name, dtype)| Series::new_empty(&col_name, &dtype)).collect();
+            self.listing_history = DataFrame::new(hist_cols).expect("Failed to create empty listing history DF");
+        }
+        
 
     }
 }

@@ -26,17 +26,19 @@ async fn main() {
     println!("Args: {:?}", args);
 
     let mut force_refresh = false;
+    // let mut target_page = None;
     if args.contains(&String::from("force_refresh")) {
         force_refresh = true;
         info!("Data reset flag set");
     }
 
     let mut listings_container = ListingsContainer::new(force_refresh);
-    listings_container.initialize_dataset();
-
+    listings_container.initialize_datasets();
+    // println!("{:?}", listings_container.data.get_column_names());
     listings_container.homes_by_zip(77532).await;
 
-    // listings_container.to_csv("out.csv");
+    listings_container.print_data_head();
+    listings_container.to_csv("out");
 
 
     

@@ -67,7 +67,8 @@ pub(crate) struct HomeListing {
 
 pub(crate) struct ListingsContainer {
     pub(crate) queue: Vec<HomeListing>, // replace w/ Multiproducer single consumer??
-    pub(crate) data: DataFrame,
+    pub(crate) listing_features: DataFrame,
+    pub(crate) listing_history: DataFrame,
     pub(crate) last_update: Option<DateTime<Local>>,
     pub(crate) force_refresh: bool,
 }
@@ -78,7 +79,8 @@ impl Default for ListingsContainer {
         
         Self { 
             queue: vec![], 
-            data: DataFrame::empty(),
+            listing_features: DataFrame::empty(),
+            listing_history: DataFrame::empty(),
             last_update: None,
             force_refresh: false,
         }
@@ -88,7 +90,12 @@ impl Default for ListingsContainer {
 impl ListingsContainer {
     /// Empty, no columns, dataframe
     pub(crate) fn new(force_refresh: bool) -> Self {
-        ListingsContainer { queue: vec![], data: DataFrame::empty(), last_update: None, force_refresh }
+        ListingsContainer { 
+            queue: vec![], 
+            listing_features: DataFrame::empty(),
+            listing_history: DataFrame::empty(), 
+            last_update: None,
+            force_refresh }
     }
 
     pub(crate) fn enqueue(&mut self, new_listings: &mut Vec<HomeListing>) {
@@ -107,7 +114,9 @@ impl ListingsContainer {
     /// empties queue
     pub(crate) fn handle_queue(&mut self) {
         
-        let mut prices = vec![];
+        
+
+
         let mut beds = vec![];
         let mut baths = vec![];
         let mut sqft = vec![];
@@ -121,16 +130,14 @@ impl ListingsContainer {
         let mut addr_str: Vec<String> = vec![];
 
         // Historical Components
-        let price_history_type = DataType::List(Box::new(DataType::UInt32));
-        let mut historical_prices = Series::new_empty("historical_prices", &price_history_type);
-
-        let historical_dates_type = DataType::List(Box::new(DataType::Date));
-        let mut historical_dates = Series::new_empty("historical_dates", &historical_dates_type);
+        let mut prices = vec![];
+        let mut dates = vec![];
 
         
         // Order doesn't matter, can be parrelized
         self.queue.iter().for_each(|listing| {
-            prices.push(listing.current_price);
+            
+            // Features
             beds.push(listing.beds);
             baths.push(listing.baths);
             sqft.push(listing.sqft);
@@ -144,21 +151,18 @@ impl ListingsContainer {
             // Clones entire object, then consumes clone to create string
             addr_str.push(listing.address.clone().into());
 
-            if let Err(e) = historical_prices.append(&Series::new("", vec![Box::new(listing.current_price)])) {
-                panic!("Failed to initialize historical price container. Error: {}", e);
-            }
-
+            // Price
+            prices.push(listing.current_price);
             let unix_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as u32;
-            if let Err(e) = historical_dates.append(&Series::new("", vec![unix_time])) {
-                panic!("Failed to initialize historical dates container. Error: {}", e);
-            }
-            // historical_dates.push(vec![Local::now()]);
+            dates.push(unix_time);
+            
         });
+        
 
         // All vecs same len
         assert!(prices.len() == beds.len() && prices.len() == baths.len() && prices.len() == sqft.len() && prices.len() == lot_size.len());
         
-        let prices = Series::new("price", prices);
+        
         let beds = Series::new("beds", beds);
         let baths = Series::new("baths", baths);
         let sqft = Series::new("sqft", sqft);
@@ -170,12 +174,20 @@ impl ListingsContainer {
         let zip = Series::new("zip", zip);
         let addr_str = Series::new("addr_str", addr_str);
 
+        let prices = Series::new("price", prices);
+        let dates = Series::new("date", dates);
 
-        let cols = vec![prices, beds, baths, sqft, lot_size, street, apt, city, state, zip, addr_str, historical_prices, historical_dates];
-        let new_listings_df = DataFrame::new(cols).unwrap();
+        let feature_cols = vec![beds, baths, sqft, lot_size, street, apt, city, state, zip, addr_str.clone()];
+        let history_cols = vec![addr_str, dates, prices];
+
+        let new_listing_features_df = DataFrame::new(feature_cols).unwrap();
+
+        let new_history_df = DataFrame::new(history_cols).unwrap();
 
         // Add rows to dataframe
-        self.data = self.data.vstack(&new_listings_df).expect("failed to concat new listings");
+        self.listing_features = self.listing_features.vstack(&new_listing_features_df).expect("failed to concat new listings");
+
+        self.listing_history = self.listing_history.vstack(&new_history_df).expect("Failed to add price history rows");
 
         // Clear Queue
         self.queue.clear();
@@ -183,18 +195,29 @@ impl ListingsContainer {
 
     }
 
-    pub(crate) fn to_csv(&mut self, path: &str) {
-        let mut file = File::create(path).expect("file creation failed");
+    pub(crate) fn to_csv(&mut self, dir: &str) {
+        let mut feature_file = File::create(format!("{}/listing_features.csv", dir)).expect("file creation failed");
+        let mut history_file = File::create(format!("{}/listing_history.csv", dir)).unwrap();
 
-        if CsvWriter::new(&mut file)
-            .finish(&mut self.data).is_err() {
-                warn!("Error writing to csv");
+        
+        if let Err(e) = CsvWriter::new(&mut feature_file)
+            .finish(&mut self.listing_features) {
+                warn!("Error writing to csv: {}", e);
             }
+        
+        if let Err(e) = CsvWriter::new(&mut history_file)
+            .finish(&mut self.listing_history) {
+                warn!("Error writing to csv: {}", e);
+            }
+
+        
         
     }
 
     pub(crate) fn print_data_head(&self) {
-        println!("{:?}", self.data.head(None))
+        println!("{:?}", self.listing_history.head(Some(5)));
+
+        println!("{:?}", self.listing_features.head(Some(5)));
     }
 }
 
