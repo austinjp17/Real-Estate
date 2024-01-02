@@ -34,7 +34,7 @@ async fn main() {
 
     let mut listings_container = ListingsContainer::new(force_refresh);
     listings_container.initialize_datasets();
-    // println!("{:?}", listings_container.data.get_column_names());
+    // println!("{:?}", listings_container.listing_history.get_columns());
     listings_container.homes_by_zip(77532).await;
 
     listings_container.print_data_head();

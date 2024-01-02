@@ -31,11 +31,27 @@ impl ListingsContainer {
     pub(crate) fn initialize_datasets(&mut self) {
             
         // If local data exists, pull it in
-        
         // Initalize local feature data
+        let feature_schema = Schema::from_iter(
+            vec![
+                Field::new("beds", DataType::Int32),
+                Field::new("baths", DataType::Int32),
+                Field::new("sqft", DataType::UInt32),
+                Field::new("lot_size", DataType::Int32),
+                Field::new("street", DataType::Utf8),
+                Field::new("apt", DataType::Int32),
+                Field::new("city", DataType::Utf8),
+                Field::new("state", DataType::Utf8),
+                Field::new("zip", DataType::UInt32),
+                Field::new("addr_str", DataType::Utf8),
+            ].into_iter()
+        );
         if !self.force_refresh {
             if let Ok(local_feature_data) = CsvReader::from_path("out/listing_features.csv"){
-                if let Ok(features_df) = local_feature_data.has_header(true).finish() {
+                if let Ok(features_df) = local_feature_data
+                    .has_header(true)
+                    .with_schema(Some(Arc::new(feature_schema)))
+                    .finish() {
                     
                     self.listing_features = features_df;
                     // TODO: Price History col
@@ -55,19 +71,7 @@ impl ListingsContainer {
         else {
             info!("Local feature data ignored/not found.");
 
-            let feature_schema = vec![
-                ("beds", &DataType::Int32),
-                ("baths", &DataType::Int32),
-                ("sqft", &DataType::UInt32),
-                ("lot_size", &DataType::Int32),
-                ("street", &DataType::Utf8),
-                ("apt", &DataType::Int32),
-                ("city", &DataType::Utf8),
-                ("state", &DataType::Utf8),
-                ("zip", &DataType::UInt32),
-                ("addr_str", &DataType::Utf8),
-            ];
-
+            
             let feature_cols: Vec<Series> = feature_schema
                 .iter()
                 .map(|(col_name, dtype)| Series::new_empty(&col_name, &dtype))
@@ -77,18 +81,22 @@ impl ListingsContainer {
         }
 
         // Initalize local historical data
+        let hist_schema = Schema::from_iter(
+            vec![
+                Field::new("addr_str", DataType::Utf8), 
+                Field::new("date", DataType::UInt32),
+                Field::new("price", DataType::UInt32),
+            ].into_iter()
+        );
         if !self.force_refresh {
             if let Ok(local_hist_data) = CsvReader::from_path("out/listing_history.csv"){
-                if let Ok(hist_df) = local_hist_data.has_header(true).finish() {
+                if let Ok(hist_df) = local_hist_data
+                    .has_header(true)
+                    .with_schema(Some(Arc::new(hist_schema)))
+                    .finish() {
                     
                     self.listing_history = hist_df;
-                    // TODO: Price History col
-                    // let last = self.data["price_history"].get(0).unwrap(); 
-                    // info!("HERE: {:?}", last);
                     
-                    // // Check for expected columns
-                    // let expected_cols: Vec<&str> = vec![];
-                    // assert_eq!(expected_cols, self.data.get_column_names());
 
                     info!("Local data initialized, shape: {:?}", self.listing_history.shape())
                     
@@ -98,11 +106,7 @@ impl ListingsContainer {
 
         else {
             info!("Local price history data ignored/not found.");
-            let hist_schema = vec![
-                ("addr_str", &DataType::Utf8), 
-                ("date", &DataType::UInt32),
-                ("price", &DataType::UInt32),
-            ];
+            
             
             let hist_cols: Vec<Series> = hist_schema.iter().map(|(col_name, dtype)| Series::new_empty(&col_name, &dtype)).collect();
             self.listing_history = DataFrame::new(hist_cols).expect("Failed to create empty listing history DF");

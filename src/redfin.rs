@@ -132,23 +132,43 @@ impl HomeListing {
         
         
     }
+
 }
 
 
 impl ListingsContainer {
     
+    //TODO: NOT WORKING! RETURNS TRUE FOR ALL
     pub(crate) fn house_exisits_in_dataset(&self, home_elem: &ElementRef) -> bool {
         let addr_str = extract_redfin_address_str(home_elem).expect("address failed to extract");
         match self.listing_features.clone().lazy().filter(
-            col("addr_str").eq(lit(addr_str))
+            col("addr_str").eq(lit(addr_str.clone())) // Get rid of clone?? Used for trace only
         ).collect().unwrap().is_empty() {
             true => false,
-            false => true
+            false => {
+                info!("Pre-existing house found at {}", addr_str);
+                true
+            }
         }
 
         
     }
 
+    // TODO: Don't add if within same day
+    pub(crate) fn update_existing_redfin(&mut self, home_elem: &ElementRef) -> Result<(), ExtractionError> {
+        let addr_str = extract_redfin_address_str(&home_elem).expect("address found in house_exists fn()");
+        let curr_price = extract_redfin_price(&home_elem).expect("address already found");
+        let unix_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as u32; // Should be u32????
+
+        let addr_str = Series::new("addr_str", vec![addr_str]);
+        let price = Series::new("price", vec![curr_price]);
+        let date = Series::new("date", vec![unix_time]);
+        
+        let new_row = DataFrame::new(vec![addr_str, date, price]).expect("Failed to create update dateframe"); // I64 -> u32?????
+        self.listing_history = self.listing_history.vstack(&new_row).expect("Failed to update listing");
+        
+        Ok(())
+    }
     /// Gets all home listings from a redfin page and adds them as 'HomeListing' objects
     /// to self.queue
     pub(crate) fn parse_redfin_page(&mut self, parsed_html: &Html) {
@@ -165,11 +185,16 @@ impl ListingsContainer {
 
         let focused_home = focused_home.next().unwrap();
 
+        // Check if house exists in dataset or if forced entry refresh
         if !self.force_refresh && self.house_exisits_in_dataset(&focused_home) {
-            // scrape price and add to price history vec
-            let curr_price = extract_redfin_price(&focused_home).expect("address already found");
-            todo!();
+            // scrape price and add to price history dataset but not listing dataset
+            if let Err(e) = self.update_existing_redfin(&focused_home) {
+                warn!("Failed to update: {:?}", e);
+            }
+            
         }
+        // House not found in dataset
+        // Add to features && price datasets
         else {
             if let Ok(listing) = HomeListing::new_from_redfin(&focused_home) {
                 self.queue.push(listing);
@@ -183,7 +208,9 @@ impl ListingsContainer {
         for home_elem in unfocused_homes {
             // If home already exists in dataset
             if !self.force_refresh && self.house_exisits_in_dataset(&home_elem) {
-                todo!() // scrape price and add to price history vec
+                if let Err(e) = self.update_existing_redfin(&home_elem) {
+                    warn!("Failed to update: {:?}", e);
+                }
             }
             // Create new row entry
             else {
