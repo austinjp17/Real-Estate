@@ -71,6 +71,9 @@ pub(crate) struct ListingsContainer {
     pub(crate) listing_history: DataFrame,
     pub(crate) last_update: Option<DateTime<Local>>,
     pub(crate) force_refresh: bool,
+
+    pub(crate) first_page_only: bool,
+
 }
 
 impl Default for ListingsContainer {
@@ -83,19 +86,22 @@ impl Default for ListingsContainer {
             listing_history: DataFrame::empty(),
             last_update: None,
             force_refresh: false,
+            first_page_only: false
         }
     }
 }
 
 impl ListingsContainer {
     /// Empty, no columns, dataframe
-    pub(crate) fn new(force_refresh: bool) -> Self {
+    pub(crate) fn new(force_refresh: bool, first_page_only: bool) -> Self {
         ListingsContainer { 
             queue: vec![], 
             listing_features: DataFrame::empty(),
             listing_history: DataFrame::empty(), 
             last_update: None,
-            force_refresh }
+            force_refresh,
+            first_page_only
+        }
     }
 
     pub(crate) fn enqueue(&mut self, new_listings: &mut Vec<HomeListing>) {
@@ -185,8 +191,10 @@ impl ListingsContainer {
         let new_history_df = DataFrame::new(history_cols).unwrap();
 
         // Add rows to dataframe
+        assert!(self.listing_features.frame_equal_schema(&new_listing_features_df).is_ok());
         self.listing_features = self.listing_features.vstack(&new_listing_features_df).expect("failed to concat new listings");
 
+        assert!(self.listing_history.frame_equal_schema(&new_history_df).is_ok());
         self.listing_history = self.listing_history.vstack(&new_history_df).expect("Failed to add price history rows");
 
         // Clear Queue
@@ -196,8 +204,8 @@ impl ListingsContainer {
     }
 
     pub(crate) fn to_csv(&mut self, dir: &str) {
-        let mut feature_file = File::create(format!("{}/listing_features.csv", dir)).expect("file creation failed");
-        let mut history_file = File::create(format!("{}/listing_history.csv", dir)).unwrap();
+        let mut feature_file = File::create(format!("{}/listing_featuress.csv", dir)).expect("file creation failed");
+        let mut history_file = File::create(format!("{}/listing_historys.csv", dir)).unwrap();
 
         
         if let Err(e) = CsvWriter::new(&mut feature_file)

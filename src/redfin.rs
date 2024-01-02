@@ -141,18 +141,21 @@ impl ListingsContainer {
     //TODO: NOT WORKING! RETURNS TRUE FOR ALL
     pub(crate) fn house_exisits_in_dataset(&self, home_elem: &ElementRef) -> bool {
         let addr_str = extract_redfin_address_str(home_elem).expect("address failed to extract");
-        match self.listing_features.clone().lazy().filter(
-            col("addr_str").eq(lit(addr_str.clone())) // Get rid of clone?? Used for trace only
-        ).collect().unwrap().is_empty() {
-            true => false,
-            false => {
-                info!("Pre-existing house found at {}", addr_str);
-                true
-            }
-        }
-
+        
+        self.listing_features.clone()
+            .lazy()
+            // filter for rows w/ address
+            .filter(col("addr_str").eq(lit(addr_str)))
+            // Count rows
+            .select([count().alias("count")])
+            .collect().expect("created above")
+            .column("count").expect("col created here")
+            .u32().expect("count col always numeric")
+            .get(0).expect("count col always has single row") > 0
+            
         
     }
+            
 
     // TODO: Don't add if within same day
     pub(crate) fn update_existing_redfin(&mut self, home_elem: &ElementRef) -> Result<(), ExtractionError> {
@@ -247,21 +250,22 @@ impl ListingsContainer {
         self.parse_redfin_page(&response);
         self.handle_queue();
 
-        for page_num in 2..=page_count {
-            let url = url_builder(SearchBy::Zipcode, zipcode, Some(page_num));
-            let request_result = helpers::request(&url).await;
-            if request_result.is_err() { 
-                let e = request_result.expect_err("Conditioned for");
-                warn!("Request Error: {}", &e);
-                panic!("Request Error: {}", e); 
-            }
-            let response = request_result.expect("conditioned");
-            self.parse_redfin_page(&response);
-        };
+        if !self.first_page_only {
+            for page_num in 2..=page_count {
+                let url = url_builder(SearchBy::Zipcode, zipcode, Some(page_num));
+                let request_result = helpers::request(&url).await;
+                if request_result.is_err() { 
+                    let e = request_result.expect_err("Conditioned for");
+                    warn!("Request Error: {}", &e);
+                    panic!("Request Error: {}", e); 
+                }
+                let response = request_result.expect("conditioned");
+                self.parse_redfin_page(&response);
+            };
 
+            self.handle_queue();
+        }
         
-        self.handle_queue();
-
     }
 
     
