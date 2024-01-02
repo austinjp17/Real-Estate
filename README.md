@@ -1,7 +1,3 @@
-Certainly! Here's the README file text formatted with Markdown:
-
----
-
 # Redfin House Listing Scraper
 
 ## Overview
